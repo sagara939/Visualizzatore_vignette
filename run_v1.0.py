@@ -5,7 +5,7 @@ from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.image import AsyncImage
 from kivy.uix.button import Button
 from kivy.uix.label import Label
-from kivy.uix.popup import Popup
+
 from kivy.uix.spinner import Spinner
 from kivy.uix.scatter import Scatter
 from kivy.core.window import Window
@@ -27,12 +27,8 @@ GITHUB_RAW_BASE = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main"
 # Estensioni immagini supportate
 IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.webp']
 
-# Configurazione serie (cartelle nel repository)
-SERIES_CONFIG = {
-    "Serie 1": "comics/serie1",
-    # Aggiungi altre serie qui:
-    # "Serie 2": "comics/serie2",
-}
+# Cartella base per le serie
+COMICS_FOLDER = "comics"
 
 
 class ComicImage(Scatter):
@@ -77,10 +73,8 @@ class ComicScreen(Screen):
         # Lista immagini della serie corrente
         self.images_list = []
         
-        # Touch per swipe
-        self.touch_start_x = 0
-        self.swipe_threshold = 100
-        self.is_swiping = False
+        # Dizionario serie (nome -> cartella)
+        self.series_config = {}
         
         # Layout principale
         self.layout = BoxLayout(orientation='vertical')
@@ -93,8 +87,8 @@ class ComicScreen(Screen):
         self.header.bind(size=self._update_header_rect, pos=self._update_header_rect)
         
         self.series_spinner = Spinner(
-            text='Seleziona Serie',
-            values=list(SERIES_CONFIG.keys()),
+            text='Caricamento...',
+            values=[],
             size_hint_x=0.5,
             background_color=(0.3, 0.3, 0.8, 1)
         )
@@ -166,25 +160,47 @@ class ComicScreen(Screen):
         self.footer_rect.pos = instance.pos
         self.footer_rect.size = instance.size
     
-    def show_status(self, message, duration=2):
-        """Mostra un messaggio di stato temporaneo"""
-        popup = Popup(
-            title='Info',
-            content=Label(text=message),
-            size_hint=(0.8, 0.2),
-            auto_dismiss=True
-        )
-        popup.open()
-        Clock.schedule_once(lambda dt: popup.dismiss(), duration)
-    
     def init_app(self, dt):
-        """Inizializza l'app selezionando la prima serie"""
-        if self.series_spinner.values:
-            self.series_spinner.text = self.series_spinner.values[0]
+        """Inizializza l'app caricando le serie da GitHub"""
+        self.load_series_list()
+    
+    def load_series_list(self):
+        """Carica la lista delle serie dalla cartella comics su GitHub"""
+        api_url = f"{GITHUB_API_BASE}/{COMICS_FOLDER}"
+        
+        try:
+            response = requests.get(api_url, timeout=10, headers={
+                'Accept': 'application/vnd.github.v3+json',
+                'User-Agent': 'ComicViewer-App'
+            })
+            
+            if response.status_code == 200:
+                items = response.json()
+                
+                # Filtra solo le cartelle (type == 'dir')
+                self.series_config = {
+                    item['name']: f"{COMICS_FOLDER}/{item['name']}"
+                    for item in items
+                    if item['type'] == 'dir'
+                }
+                
+                # Aggiorna lo spinner con i nomi delle serie
+                self.series_spinner.values = list(self.series_config.keys())
+                
+                if self.series_spinner.values:
+                    self.series_spinner.text = self.series_spinner.values[0]
+                else:
+                    self.series_spinner.text = 'Nessuna serie'
+            else:
+                self.series_spinner.text = 'Errore caricamento'
+                
+        except Exception as e:
+            print(f"Errore caricamento serie: {str(e)}")
+            self.series_spinner.text = 'Errore connessione'
     
     def on_series_change(self, spinner, text):
         """Cambia serie selezionata"""
-        if text in SERIES_CONFIG:
+        if text in self.series_config:
             self.current_series = text
             self.current_index = 0
             self.images_list = []
@@ -192,14 +208,13 @@ class ComicScreen(Screen):
     
     def load_images_list(self):
         """Carica la lista delle immagini dalla cartella GitHub"""
-        if not self.current_series:
+        if not self.current_series or self.current_series not in self.series_config:
             return
         
-        folder = SERIES_CONFIG[self.current_series]
+        folder = self.series_config[self.current_series]
         api_url = f"{GITHUB_API_BASE}/{folder}"
         
         print(f"Caricamento lista immagini da: {api_url}")
-        self.show_status("Caricamento...")
         
         try:
             response = requests.get(api_url, timeout=10, headers={
@@ -225,15 +240,12 @@ class ComicScreen(Screen):
                     self.current_index = 0
                     self.load_comic()
                 else:
-                    self.show_status("Nessuna immagine trovata")
                     self.counter_label.text = "0/0"
             else:
                 print(f"Errore API: {response.status_code}")
-                self.show_status(f"Errore: {response.status_code}")
                 
         except Exception as e:
             print(f"Errore connessione: {str(e)}")
-            self.show_status("Errore connessione")
     
     def load_comic(self):
         """Carica l'immagine corrente"""
@@ -241,7 +253,7 @@ class ComicScreen(Screen):
             return
         
         if 0 <= self.current_index < len(self.images_list):
-            folder = SERIES_CONFIG[self.current_series]
+            folder = self.series_config[self.current_series]
             filename = self.images_list[self.current_index]
             
             # Costruisci URL dell'immagine
@@ -262,46 +274,16 @@ class ComicScreen(Screen):
         if self.images_list and self.current_index < len(self.images_list) - 1:
             self.current_index += 1
             self.load_comic()
-        else:
-            self.show_status("Ultima immagine")
     
     def prev_comic(self, instance=None):
         """Vai all'immagine precedente"""
         if self.images_list and self.current_index > 0:
             self.current_index -= 1
             self.load_comic()
-        else:
-            self.show_status("Prima immagine")
     
     def refresh_images(self, instance=None):
-        """Ricarica la lista immagini"""
-        self.show_status("Aggiornamento...", 1)
-        Clock.schedule_once(lambda dt: self.load_images_list(), 0.5)
-    
-    def on_touch_down(self, touch):
-        """Rileva inizio swipe"""
-        self.touch_start_x = touch.x
-        self.is_swiping = False
-        return super().on_touch_down(touch)
-    
-    def on_touch_move(self, touch):
-        """Rileva movimento swipe"""
-        diff_x = abs(touch.x - self.touch_start_x)
-        if diff_x > 50:
-            self.is_swiping = True
-        return super().on_touch_move(touch)
-    
-    def on_touch_up(self, touch):
-        """Rileva fine swipe e cambia vignetta"""
-        diff = touch.x - self.touch_start_x
-        if self.is_swiping and abs(diff) > self.swipe_threshold:
-            if diff > 0:
-                self.prev_comic()
-            else:
-                self.next_comic()
-            self.is_swiping = False
-            return True
-        return super().on_touch_up(touch)
+        """Ricarica le serie e le immagini"""
+        self.load_series_list()
 
 
 class ComicViewerApp(App):
