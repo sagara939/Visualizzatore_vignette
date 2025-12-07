@@ -1,0 +1,23 @@
+{
+  "series": [
+    {
+      "name": "Serie 1",
+      "base_url": "https://raw.githubusercontent.com/sagara939/Visualizzatore_vignette/main/comics/serie1/",
+      "date_format": "%Y-%m-%d",
+      "file_extension": ".png",
+      "description": "Prima serie di vignette"
+    },
+    {
+      "name": "Serie 2",
+      "base_url": "https://raw.githubusercontent.com/sagara939/Visualizzatore_vignette/main/comics/serie2/",
+      "date_format": "%Y-%m-%d",
+      "file_extension": ".png",
+      "description": "Seconda serie di vignette"
+    }
+  ],
+  "app_settings": {
+    "cache_enabled": true,
+    "cache_days": 7,
+    "default_series": "Serie 1"
+  }
+}
