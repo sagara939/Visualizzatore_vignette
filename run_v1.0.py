@@ -1,10 +1,7 @@
 import os
-import json
 import requests
-from datetime import datetime, timedelta
 from kivy.app import App
 from kivy.uix.boxlayout import BoxLayout
-from kivy.uix.scrollview import ScrollView
 from kivy.uix.image import AsyncImage
 from kivy.uix.button import Button
 from kivy.uix.label import Label
@@ -12,19 +9,30 @@ from kivy.uix.popup import Popup
 from kivy.uix.spinner import Spinner
 from kivy.uix.scatter import Scatter
 from kivy.core.window import Window
-from kivy.uix.screenmanager import ScreenManager, Screen, SlideTransition
-from kivy.properties import StringProperty, ListProperty, NumericProperty
-from kivy.storage.jsonstore import JsonStore
+from kivy.uix.screenmanager import ScreenManager, Screen
+from kivy.properties import StringProperty, NumericProperty
 from kivy.clock import Clock
 from kivy.graphics import Color, Rectangle
 
+# --- CONFIGURAZIONE FINESTRA ---
+# Dimensioni smartphone Full HD (proporzione 9:16)
+Window.size = (405, 720)  # Full HD scalato per test su PC
+
 # --- CONFIGURAZIONE ---
-# GitHub raw content URL per il repository
+# GitHub repository
 GITHUB_REPO = "sagara939/Visualizzatore_vignette"
+GITHUB_API_BASE = f"https://api.github.com/repos/{GITHUB_REPO}/contents"
 GITHUB_RAW_BASE = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main"
-CONFIG_URL = f"{GITHUB_RAW_BASE}/config.json"
-LOCAL_CONFIG = "config.json"
-CACHE_DIR = "cache"
+
+# Estensioni immagini supportate
+IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.webp']
+
+# Configurazione serie (cartelle nel repository)
+SERIES_CONFIG = {
+    "Serie 1": "comics/serie1",
+    # Aggiungi altre serie qui:
+    # "Serie 2": "comics/serie2",
+}
 
 
 class ComicImage(Scatter):
@@ -41,10 +49,12 @@ class ComicImage(Scatter):
         
         self.image = AsyncImage(
             source=self.source,
-            allow_stretch=True,
-            keep_ratio=True
+            fit_mode='contain',
+            size_hint=(1, 1),
+            pos_hint={'center_x': 0.5, 'center_y': 0.5}
         )
         self.bind(source=self._update_source)
+        self.bind(size=self._update_image_size)
         self.add_widget(self.image)
     
     def _update_source(self, instance, value):
@@ -52,23 +62,23 @@ class ComicImage(Scatter):
         self.scale = 1.0
         self.pos = (0, 0)
     
-    def on_touch_down(self, touch):
-        # Controlla se è un tocco con due dita (zoom)
-        if len(touch.grab_list) > 0 or touch.is_double_tap:
-            return super().on_touch_down(touch)
-        return super().on_touch_down(touch)
+    def _update_image_size(self, instance, value):
+        self.image.size = self.size
 
 
 class ComicScreen(Screen):
     """Schermata principale per visualizzare le vignette"""
     current_series = StringProperty("")
-    current_date = StringProperty("")
+    current_index = NumericProperty(0)
     
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.series_data = {}
+        
+        # Lista immagini della serie corrente
+        self.images_list = []
+        
+        # Touch per swipe
         self.touch_start_x = 0
-        self.touch_start_y = 0
         self.swipe_threshold = 100
         self.is_swiping = False
         
@@ -84,14 +94,14 @@ class ComicScreen(Screen):
         
         self.series_spinner = Spinner(
             text='Seleziona Serie',
-            values=[],
+            values=list(SERIES_CONFIG.keys()),
             size_hint_x=0.5,
             background_color=(0.3, 0.3, 0.8, 1)
         )
         self.series_spinner.bind(text=self.on_series_change)
         
-        self.date_label = Label(
-            text="",
+        self.counter_label = Label(
+            text="0/0",
             size_hint_x=0.35,
             font_size='14sp'
         )
@@ -101,33 +111,22 @@ class ComicScreen(Screen):
             size_hint_x=0.15,
             background_color=(0.3, 0.6, 0.3, 1)
         )
-        self.refresh_btn.bind(on_press=self.refresh_series)
+        self.refresh_btn.bind(on_press=self.refresh_images)
         
         self.header.add_widget(self.series_spinner)
-        self.header.add_widget(self.date_label)
+        self.header.add_widget(self.counter_label)
         self.header.add_widget(self.refresh_btn)
         
-        # Area immagine con scroll verticale
-        self.scroll_view = ScrollView(
-            do_scroll_x=False,
-            do_scroll_y=True,
-            size_hint_y=0.84,
-            bar_width=10,
-            scroll_type=['bars', 'content']
-        )
-        
-        self.image_container = BoxLayout(
+        # Area immagine - BoxLayout che riempie lo spazio
+        self.image_area = BoxLayout(
             orientation='vertical',
-            size_hint_y=None
+            size_hint_y=0.84
         )
-        self.image_container.bind(minimum_height=self.image_container.setter('height'))
         
         self.comic_image = ComicImage(
-            size_hint=(1, None),
-            height=Window.height * 1.5
+            size_hint=(1, 1)
         )
-        self.image_container.add_widget(self.comic_image)
-        self.scroll_view.add_widget(self.image_container)
+        self.image_area.add_widget(self.comic_image)
         
         # Footer con navigazione
         self.footer = BoxLayout(size_hint_y=0.08, padding=5, spacing=10)
@@ -152,12 +151,9 @@ class ComicScreen(Screen):
         self.footer.add_widget(self.next_btn)
         
         self.layout.add_widget(self.header)
-        self.layout.add_widget(self.scroll_view)
+        self.layout.add_widget(self.image_area)
         self.layout.add_widget(self.footer)
         self.add_widget(self.layout)
-        
-        # Status popup
-        self.status_label = None
         
         # Inizializza
         Clock.schedule_once(self.init_app, 0.5)
@@ -182,144 +178,116 @@ class ComicScreen(Screen):
         Clock.schedule_once(lambda dt: popup.dismiss(), duration)
     
     def init_app(self, dt):
-        """Inizializza l'app caricando la configurazione"""
-        # Crea cartella cache se non esiste
-        if not os.path.exists(CACHE_DIR):
-            os.makedirs(CACHE_DIR)
-        self.load_config()
-    
-    def load_config(self):
-        """Carica la configurazione delle serie (locale + remota)"""
-        # Prova a caricare config remota
-        try:
-            response = requests.get(CONFIG_URL, timeout=5)
-            if response.status_code == 200:
-                remote_config = response.json()
-                self.save_local_config(remote_config)
-                self.apply_config(remote_config)
-                print("Config remota caricata con successo")
-                return
-        except Exception as e:
-            print(f"Errore caricamento config remota: {e}")
-        
-        # Fallback su config locale
-        if os.path.exists(LOCAL_CONFIG):
-            try:
-                with open(LOCAL_CONFIG, 'r', encoding='utf-8') as f:
-                    local_config = json.load(f)
-                    self.apply_config(local_config)
-                    print("Config locale caricata")
-            except Exception as e:
-                print(f"Errore config locale: {e}")
-                self.apply_default_config()
-        else:
-            self.apply_default_config()
-    
-    def apply_default_config(self):
-        """Applica configurazione di default"""
-        default_config = {
-            "series": [
-                {
-                    "name": "Serie Demo",
-                    "base_url": "https://tuo-server.com/comics/demo/",
-                    "date_format": "%Y-%m-%d",
-                    "file_extension": ".png"
-                }
-            ]
-        }
-        self.save_local_config(default_config)
-        self.apply_config(default_config)
-    
-    def save_local_config(self, config):
-        """Salva la configurazione localmente"""
-        try:
-            with open(LOCAL_CONFIG, 'w', encoding='utf-8') as f:
-                json.dump(config, f, indent=2, ensure_ascii=False)
-        except Exception as e:
-            print(f"Errore salvataggio config: {e}")
-    
-    def apply_config(self, config):
-        """Applica la configurazione caricata"""
-        self.series_data = {s['name']: s for s in config.get('series', [])}
-        self.series_spinner.values = list(self.series_data.keys())
+        """Inizializza l'app selezionando la prima serie"""
         if self.series_spinner.values:
             self.series_spinner.text = self.series_spinner.values[0]
     
     def on_series_change(self, spinner, text):
         """Cambia serie selezionata"""
-        if text in self.series_data:
+        if text in SERIES_CONFIG:
             self.current_series = text
-            self.current_date = datetime.now().strftime("%Y-%m-%d")
-            self.load_comic()
+            self.current_index = 0
+            self.images_list = []
+            self.load_images_list()
     
-    def load_comic(self):
-        """Carica la vignetta corrente"""
-        if not self.current_series or self.current_series not in self.series_data:
+    def load_images_list(self):
+        """Carica la lista delle immagini dalla cartella GitHub"""
+        if not self.current_series:
             return
         
-        series = self.series_data[self.current_series]
-        base_url = series.get('base_url', '')
-        date_format = series.get('date_format', '%Y-%m-%d')
-        extension = series.get('file_extension', '.png')
+        folder = SERIES_CONFIG[self.current_series]
+        api_url = f"{GITHUB_API_BASE}/{folder}"
         
-        # Costruisci URL immagine
+        print(f"Caricamento lista immagini da: {api_url}")
+        self.show_status("Caricamento...")
+        
         try:
-            date_obj = datetime.strptime(self.current_date, "%Y-%m-%d")
-            formatted_date = date_obj.strftime(date_format)
-        except:
-            formatted_date = self.current_date
+            response = requests.get(api_url, timeout=10, headers={
+                'Accept': 'application/vnd.github.v3+json',
+                'User-Agent': 'ComicViewer-App'
+            })
+            
+            print(f"Risposta API: {response.status_code}")
+            
+            if response.status_code == 200:
+                files = response.json()
+                
+                # Filtra solo le immagini e ordina alfabeticamente
+                self.images_list = sorted([
+                    f['name'] for f in files 
+                    if f['type'] == 'file' and 
+                    any(f['name'].lower().endswith(ext) for ext in IMAGE_EXTENSIONS)
+                ])
+                
+                print(f"Trovate {len(self.images_list)} immagini: {self.images_list}")
+                
+                if self.images_list:
+                    self.current_index = 0
+                    self.load_comic()
+                else:
+                    self.show_status("Nessuna immagine trovata")
+                    self.counter_label.text = "0/0"
+            else:
+                print(f"Errore API: {response.status_code}")
+                self.show_status(f"Errore: {response.status_code}")
+                
+        except Exception as e:
+            print(f"Errore connessione: {str(e)}")
+            self.show_status("Errore connessione")
+    
+    def load_comic(self):
+        """Carica l'immagine corrente"""
+        if not self.images_list:
+            return
         
-        image_url = f"{base_url}{formatted_date}{extension}"
-        
-        print(f"Caricamento: {image_url}")
-        self.comic_image.source = image_url
-        self.date_label.text = self.current_date
-        
-        # Reset zoom e scroll
-        self.comic_image.scale = 1.0
-        self.scroll_view.scroll_y = 1
+        if 0 <= self.current_index < len(self.images_list):
+            folder = SERIES_CONFIG[self.current_series]
+            filename = self.images_list[self.current_index]
+            
+            # Costruisci URL dell'immagine
+            image_url = f"{GITHUB_RAW_BASE}/{folder}/{filename}"
+            
+            print(f"Caricamento immagine: {image_url}")
+            self.comic_image.source = image_url
+            
+            # Aggiorna contatore
+            self.counter_label.text = f"{self.current_index + 1}/{len(self.images_list)}"
+            
+            # Reset zoom
+            self.comic_image.scale = 1.0
+            self.comic_image.pos = (0, 0)
     
     def next_comic(self, instance=None):
-        """Vai alla vignetta successiva (giorno dopo)"""
-        try:
-            date_obj = datetime.strptime(self.current_date, "%Y-%m-%d")
-            new_date = date_obj + timedelta(days=1)
-            if new_date <= datetime.now():
-                self.current_date = new_date.strftime("%Y-%m-%d")
-                self.load_comic()
-            else:
-                self.show_status("Nessuna vignetta futura disponibile")
-        except Exception as e:
-            print(f"Errore navigazione: {e}")
+        """Vai all'immagine successiva"""
+        if self.images_list and self.current_index < len(self.images_list) - 1:
+            self.current_index += 1
+            self.load_comic()
+        else:
+            self.show_status("Ultima immagine")
     
     def prev_comic(self, instance=None):
-        """Vai alla vignetta precedente (giorno prima)"""
-        try:
-            date_obj = datetime.strptime(self.current_date, "%Y-%m-%d")
-            new_date = date_obj - timedelta(days=1)
-            self.current_date = new_date.strftime("%Y-%m-%d")
+        """Vai all'immagine precedente"""
+        if self.images_list and self.current_index > 0:
+            self.current_index -= 1
             self.load_comic()
-        except Exception as e:
-            print(f"Errore navigazione: {e}")
+        else:
+            self.show_status("Prima immagine")
     
-    def refresh_series(self, instance=None):
-        """Ricarica la configurazione delle serie dal server"""
-        self.show_status("Aggiornamento serie...", 1)
-        Clock.schedule_once(lambda dt: self.load_config(), 0.5)
+    def refresh_images(self, instance=None):
+        """Ricarica la lista immagini"""
+        self.show_status("Aggiornamento...", 1)
+        Clock.schedule_once(lambda dt: self.load_images_list(), 0.5)
     
     def on_touch_down(self, touch):
         """Rileva inizio swipe"""
         self.touch_start_x = touch.x
-        self.touch_start_y = touch.y
         self.is_swiping = False
         return super().on_touch_down(touch)
     
     def on_touch_move(self, touch):
         """Rileva movimento swipe"""
         diff_x = abs(touch.x - self.touch_start_x)
-        diff_y = abs(touch.y - self.touch_start_y)
-        # Se movimento orizzontale > verticale, è uno swipe
-        if diff_x > diff_y and diff_x > 50:
+        if diff_x > 50:
             self.is_swiping = True
         return super().on_touch_move(touch)
     
