@@ -13,10 +13,12 @@ from kivy.uix.screenmanager import ScreenManager, Screen
 from kivy.properties import StringProperty, NumericProperty
 from kivy.clock import Clock
 from kivy.graphics import Color, Rectangle
+from kivy.utils import platform
 
 # --- CONFIGURAZIONE FINESTRA ---
-# Dimensioni smartphone Full HD (proporzione 9:16)
-Window.size = (405, 720)  # Full HD scalato per test su PC
+# Su PC imposta dimensione fissa per test, su Android usa fullscreen
+if platform != 'android':
+    Window.size = (405, 720)  # Full HD scalato per test su PC
 
 # --- CONFIGURAZIONE ---
 # GitHub repository
@@ -101,7 +103,7 @@ class ComicScreen(Screen):
         )
         
         self.refresh_btn = Button(
-            text="⟳",
+            text="🔄",
             size_hint_x=0.15,
             background_color=(0.3, 0.6, 0.3, 1)
         )
@@ -130,13 +132,13 @@ class ComicScreen(Screen):
         self.footer.bind(size=self._update_footer_rect, pos=self._update_footer_rect)
         
         self.prev_btn = Button(
-            text="◀ Precedente",
+            text="Ieri",
             background_color=(0.4, 0.4, 0.6, 1)
         )
         self.prev_btn.bind(on_press=self.prev_comic)
         
         self.next_btn = Button(
-            text="Successivo ▶",
+            text="Domani",
             background_color=(0.4, 0.4, 0.6, 1)
         )
         self.next_btn.bind(on_press=self.next_comic)
